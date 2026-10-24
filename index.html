@@ -96,6 +96,10 @@ function isRoad(px,py,pad=0){return roads.some(r=>pointDist(px,py,r.x1,r.y1,r.x2
 function nearRoad(px,py){return roads.some(r=>pointDist(px,py,r.x1,r.y1,r.x2,r.y2)<roadWidth(r)/2+15)}
 function drawGrass(){
  ctx.fillStyle='#8fce72';ctx.fillRect(0,0,W,H);
+ // Semi-3D terrain lighting for a gently angled, dimensional landscape
+ const terrainShade=ctx.createLinearGradient(0,0,W,H);
+ terrainShade.addColorStop(0,'#ffffff18');terrainShade.addColorStop(.55,'#ffffff00');terrainShade.addColorStop(1,'#285b2b24');
+ ctx.fillStyle=terrainShade;ctx.fillRect(0,0,W,H);
  // subtle rolling fields
  for(let y=0;y<H;y+=120){ctx.fillStyle=y%240?'#ffffff08':'#3d9b3a0a';ctx.fillRect(0,y,W,60)}
  // tiny grass tufts
@@ -106,6 +110,9 @@ function drawGrass(){
 function drawRoad(r){
  const w=roadWidth(r),congested=traffic>70;
  ctx.lineCap='round';ctx.lineJoin='round';
+ // Raised roadbed with a lower bevel and offset shadow creates semi-3D depth
+ ctx.strokeStyle='#52714a';ctx.lineWidth=w+14;ctx.beginPath();ctx.moveTo(r.x1+2,r.y1+7);ctx.lineTo(r.x2+2,r.y2+7);ctx.stroke();
+ ctx.strokeStyle='#6b7358';ctx.lineWidth=w+7;ctx.beginPath();ctx.moveTo(r.x1,r.y1+3);ctx.lineTo(r.x2,r.y2+3);ctx.stroke();
  if(congested){ctx.strokeStyle=frame%24<12?'#ff4e52':'#ff9b62';ctx.lineWidth=w+12;ctx.beginPath();ctx.moveTo(r.x1,r.y1);ctx.lineTo(r.x2,r.y2);ctx.stroke()}
  ctx.strokeStyle='#20282a';ctx.lineWidth=w+5;ctx.beginPath();ctx.moveTo(r.x1,r.y1);ctx.lineTo(r.x2,r.y2);ctx.stroke();
  ctx.strokeStyle='#30383a';ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(r.x1,r.y1);ctx.lineTo(r.x2,r.y2);ctx.stroke();
@@ -125,6 +132,8 @@ function drawToll(t){
 }
 function drawCar(c){
  ctx.save();ctx.translate(c.x,c.y);ctx.rotate(c.angle);
+ // Vehicle ground shadow gives the cars a raised semi-3D appearance
+ ctx.fillStyle='#19351d55';ctx.beginPath();ctx.ellipse(1,5,12,7,0,0,Math.PI*2);ctx.fill();
  const colors=['#f5f6f1','#f4bc46','#4ca6e8','#e76c5d','#c6b5ff','#2d423b'];ctx.fillStyle=colors[c.color%colors.length];
  ctx.shadowColor='#0003';ctx.shadowBlur=4;ctx.shadowOffsetY=2;
  roundRect(-10,-5,20,10,3);ctx.fill();ctx.shadowColor='transparent';ctx.shadowOffsetY=0;
@@ -143,26 +152,58 @@ function draw(){
  // little sign
  ctx.fillStyle='#143b27';roundRect(18,H-47,154,29,8);ctx.fill();ctx.fillStyle='#eaffd4';ctx.font='bold 11px system-ui';ctx.fillText('CITY PLANNING ZONE',29,H-28);
 }
+function nearestPointOnRoad(px,py,r){
+ const dx=r.x2-r.x1,dy=r.y2-r.y1,l=dx*dx+dy*dy;
+ const t=l?Math.max(0,Math.min(1,((px-r.x1)*dx+(py-r.y1)*dy)/l)):0;
+ return {x:r.x1+dx*t,y:r.y1+dy*t,t,d:Math.hypot(px-(r.x1+dx*t),py-(r.y1+dy*t))};
+}
+function nearestRoadPoint(px,py){
+ let best=null;
+ roads.forEach(r=>{const q=nearestPointOnRoad(px,py,r);if(!best||q.d<best.d)best={...q,r}});
+ return best;
+}
+function connectedRoadsAt(x,y,current){
+ return roads.map(r=>({r,a:Math.hypot(r.x1-x,r.y1-y),b:Math.hypot(r.x2-x,r.y2-y)}))
+  .filter(o=>o.r!==current&&Math.min(o.a,o.b)<Math.max(roadWidth(o.r)/2+18,25));
+}
+function chooseNextRoad(c,x,y){
+ const options=connectedRoadsAt(x,y,c.r);
+ if(!options.length)return false;
+ const scored=options.map(o=>{
+   const atStart=o.a<o.b,nx=atStart?o.r.x2-o.r.x1:o.r.x1-o.r.x2,ny=atStart?o.r.y2-o.r.y1:o.r.y1-o.r.y2;
+   const angle=Math.atan2(ny,nx),delta=Math.abs(Math.atan2(Math.sin(angle-c.angle),Math.cos(angle-c.angle)));
+   return {...o,atStart,score:delta+Math.random()*.25};
+ }).sort((a,b)=>a.score-b.score);
+ const next=scored[0];c.r=next.r;c.t=next.atStart?0:1;c.dir=next.atStart?1:-1;c.paid=false;return true;
+}
 function spawnCar(){
- const r=roads[Math.floor(Math.random()*roads.length)],dx=r.x2-r.x1,dy=r.y2-r.y1,len=Math.hypot(dx,dy);if(len<5)return;
- const reverse=Math.random()<.5,t=reverse?1:0;
- cars.push({r,t,dir:reverse?-1:1,speed:0.0014+level*0.00008,color:Math.floor(Math.random()*6),x:t?r.x2:r.x1,y:t?r.y2:r.y1,angle:Math.atan2(dy,dx)+(reverse?Math.PI:0),paid:false});
+ if(!roads.length)return;
+ const ends=[];
+ roads.forEach(r=>{
+  ends.push({r,t:0,x:r.x1,y:r.y1,angle:Math.atan2(r.y2-r.y1,r.x2-r.x1)});
+  ends.push({r,t:1,x:r.x2,y:r.y2,angle:Math.atan2(r.y1-r.y2,r.x1-r.x2)});
+ });
+ const end=ends[Math.floor(Math.random()*ends.length)];
+ cars.push({r:end.r,t:end.t,dir:end.t===0?1:-1,speed:0.00145,color:Math.floor(Math.random()*6),x:end.x,y:end.y,angle:end.angle,paid:false});
 }
 function tick(){
  frame++;carTimer++;
  const spawnEvery=Math.max(22,88-level*7);
  if(carTimer>spawnEvery){spawnCar();carTimer=0}
  for(let i=cars.length-1;i>=0;i--){
-  const c=cars[i],r=c.r,dx=r.x2-r.x1,dy=r.y2-r.y1,len=Math.hypot(dx,dy);
-  c.t+=c.dir*c.speed;
-  if(c.t<0||c.t>1){cars.splice(i,1);continue}
-  c.x=r.x1+dx*c.t;c.y=r.y1+dy*c.t;c.angle=Math.atan2(dy,dx)+(c.dir<0?Math.PI:0);
-  // tolls reward cars passing nearby, once per car
+  const c=cars[i],r=c.r,dx=r.x2-r.x1,dy=r.y2-r.y1;
+  c.t+=c.dir*c.speed*(1+Math.min(level,8)*.025);
+  if(c.t<0||c.t>1){
+   const endT=c.t<0?0:1,ex=endT===0?r.x1:r.x2,ey=endT===0?r.y1:r.y2;
+   if(chooseNextRoad(c,ex,ey)){c.t=Math.max(0,Math.min(1,c.t))}
+   else{c.t=endT;c.dir*=-1;c.angle=Math.atan2(dy,dx)+(c.dir<0?Math.PI:0)}
+  }
+  const rr=c.r,rdx=rr.x2-rr.x1,rdy=rr.y2-rr.y1;
+  c.x=rr.x1+rdx*c.t;c.y=rr.y1+rdy*c.t;c.angle=Math.atan2(rdy,rdx)+(c.dir<0?Math.PI:0);
   if(!c.paid&&tolls.some(t=>Math.hypot(t.x-c.x,t.y-c.y)<18)){c.paid=true;money+=3;earnings+=3;updateUI()}
  }
  const capacity=level*30+20,load=Math.min(100,Math.round(cars.length/capacity*100+level*3));
- traffic=Math.max(8,load);
- if(traffic>100)traffic=100;
+ traffic=Math.max(8,load);if(traffic>100)traffic=100;
  $('alert').style.display=traffic>70?'block':'none';
  $('trafficBar').style.width=traffic+'%';$('trafficBar').style.background=traffic>70?'#ff4e52':traffic>48?'#ffb84b':'#7cc65c';
  $('trafficText').textContent=`Traffic load: ${traffic}% · ${traffic>70?'Congestion warning! Upgrade now.':traffic>48?'Traffic is rising. Plan an upgrade.':'Flow is stable.'}`;
@@ -194,12 +235,14 @@ function toll(){
 }
 function canvasPos(e){const rect=canvas.getBoundingClientRect();return{x:(e.clientX-rect.left)*W/rect.width,y:(e.clientY-rect.top)*H/rect.height}}
 function snap(p){return{x:Math.round(p.x/5)*5,y:Math.round(p.y/5)*5}}
-canvas.addEventListener('pointerdown',e=>{const p=snap(canvasPos(e));if(nearRoad(p.x,p.y)){dragging=true;drawPath=[p];lastPoint=p;canvas.setPointerCapture(e.pointerId)}else showToast('Start your road from an existing road to connect the network.')});
+canvas.addEventListener('pointerdown',e=>{const raw=snap(canvasPos(e)),near=nearestRoadPoint(raw.x,raw.y);if(near&&near.d<roadWidth(near.r)/2+20){const p={x:near.x,y:near.y};dragging=true;drawPath=[p];lastPoint=p;canvas.setPointerCapture(e.pointerId)}else showToast('Start your road from an existing road to connect the network.')});
 canvas.addEventListener('pointermove',e=>{if(!dragging)return;const p=snap(canvasPos(e));if(Math.hypot(p.x-lastPoint.x,p.y-lastPoint.y)>18){drawPath.push(p);lastPoint=p}});
 canvas.addEventListener('pointerup',()=>{
  if(!dragging)return;dragging=false;
  if(drawPath.length<2){drawPath=[];return}
- const start=drawPath[0],end=drawPath[drawPath.length-1];
+ const start=drawPath[0],rawEnd=drawPath[drawPath.length-1],nearEnd=nearestRoadPoint(rawEnd.x,rawEnd.y);
+ const end=nearEnd&&nearEnd.d<26?{x:nearEnd.x,y:nearEnd.y}:rawEnd;
+ drawPath[drawPath.length-1]=end;
  if(!nearRoad(start.x,start.y)){showToast('Roads must connect to your network.');drawPath=[];return}
  if(end.x<20||end.x>W-20||end.y<20||end.y>H-20){showToast('Keep roads inside the map.');drawPath=[];return}
  let added=0;for(let i=1;i<drawPath.length;i++){const a=drawPath[i-1],b=drawPath[i];if(Math.hypot(b.x-a.x,b.y-a.y)>18){roads.push({x1:a.x,y1:a.y,x2:b.x,y2:b.y,level});added++}}
